@@ -5,6 +5,7 @@ call them as member functions on the context returned by the new() functions.
 
 @module libmodbus
 @author Karl Palsson <karlp@etactica.com> 2016-2020
+@modified Peeter Paist <peeter@superhands.ee> 2024
 
 @license
   Permission is hereby granted, free of charge, to any person obtaining
@@ -65,7 +66,7 @@ typedef struct {
 	char parity;
 	int databits;
 	int stopbits;
-
+	int flowctrl;
 	/* used to prevent using tcp methods on a rtu context */
 	bool is_rtu;
 } ctx_t;
@@ -115,6 +116,7 @@ static int libmodbus_version(lua_State *L)
  * @param parity defaults to EVEN
  * @param databits defaults to 8
  * @param stopbits defaults to 1
+ * @param flowctrl defaults to 0
  * @return a modbus context ready for use
  */
 static int libmodbus_new_rtu(lua_State *L)
@@ -124,6 +126,7 @@ static int libmodbus_new_rtu(lua_State *L)
 	const char *parityin = luaL_optstring(L, 3, "EVEN");
 	int databits = luaL_optnumber(L, 4, 8);
 	int stopbits = luaL_optnumber(L, 5, 1);
+	int flowctrl = luaL_optnumber(L, 6, 0);
 
 	/* just accept baud as is */
 	/* parity must be one of a few things... */
@@ -147,7 +150,7 @@ static int libmodbus_new_rtu(lua_State *L)
 
 	ctx_t *ctx = (ctx_t *) lua_newuserdata(L, sizeof(ctx_t));
 
-	ctx->modbus = modbus_new_rtu(device, baud, parity, databits, stopbits);
+	ctx->modbus = modbus_new_rtu(device, baud, parity, databits, stopbits, flowctrl);
 	ctx->max_len = MODBUS_RTU_MAX_ADU_LENGTH;
 	ctx->is_rtu = true;
 
@@ -836,7 +839,7 @@ static int _ctx_read_regs(lua_State *L, bool input)
 	}
 	
 	// better malloc as much space as we need to return data here...
-	uint16_t *buf = malloc(count * sizeof(uint16_t));
+	uint8_t *buf = malloc(2 * count * sizeof(uint8_t));
 	assert(buf);
 	if (input) {
 		rc = modbus_read_input_registers(ctx->modbus, addr, count, buf);
@@ -846,9 +849,9 @@ static int _ctx_read_regs(lua_State *L, bool input)
 	if (rc == count) {
 		lua_newtable(L);
 		/* nota bene, lua style offsets! */
-		for (int i = 1; i <= rc; i++) {
-			lua_pushnumber(L, i);
-			lua_pushnumber(L, buf[i-1]);
+		for (int i = 0; i < rc; i++) {
+			lua_pushnumber(L, i + 1);
+			lua_pushnumber(L, (buf[2 * i] << 8) | buf[2 * i + 1]);
 			lua_settable(L, -3);
 		}
 		rcount = 1;
@@ -970,8 +973,8 @@ static int ctx_write_bits(lua_State *L)
 		return luaL_argerror(L, 3, "requested too many bits");
 	}
 
-	/* Convert table to uint8_t array */
-	uint8_t *buf = malloc(count * sizeof(uint8_t));
+	/* Convert table to uint16_t array */
+	uint16_t *buf = malloc(count * sizeof(uint16_t));
 	assert(buf);
 	for (int i = 1; i <= count; i++) {
 		bool ok = false;
@@ -1286,7 +1289,8 @@ struct defines {
 static const struct definei D[] = {
         {"RTU_RS232", MODBUS_RTU_RS232},
         {"RTU_RS485", MODBUS_RTU_RS485},
-	{"TCP_SLAVE", MODBUS_TCP_SLAVE},
+	//{"TCP_SLAVE", MODBUS_TCP_SLAVE},
+	{"TCP_SLAVE", 0xFF},
 	{"BROADCAST_ADDRESS", MODBUS_BROADCAST_ADDRESS},
 	{"ERROR_RECOVERY_NONE", MODBUS_ERROR_RECOVERY_NONE},
 	{"ERROR_RECOVERY_LINK", MODBUS_ERROR_RECOVERY_LINK},
