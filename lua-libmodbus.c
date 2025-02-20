@@ -38,6 +38,10 @@ call them as member functions on the context returned by the new() functions.
 #include <errno.h>
 #include <assert.h>
 #include <sys/time.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+
 #if defined(WIN32)
 #include <winsock2.h>
 #endif
@@ -635,6 +639,47 @@ static int ctx_set_socket(lua_State *L)
 }
 
 /**
+ * @function ctx:get_peer_name
+ * @return string with the IP address and port number of the peer
+ */
+static int ctx_get_peer_name(lua_State *L)
+{
+	int port = 0;
+	char name[INET6_ADDRSTRLEN];
+	struct sockaddr_storage peer;
+	socklen_t peer_len = sizeof(peer);
+	ctx_t *ctx = ctx_check(L, 1);
+	int socket = modbus_get_socket(ctx->modbus);
+	
+	if (getpeername(socket, (struct sockaddr *) &peer, &peer_len) < 0) {
+		lua_pushnil(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+	switch((&peer)->ss_family) {
+	case AF_INET: {
+		struct sockaddr_in *addr_in = (struct sockaddr_in *)&peer;
+
+		inet_ntop(AF_INET, &(addr_in->sin_addr), name, INET_ADDRSTRLEN);
+		port = htons(addr_in->sin_port);
+		break;
+	}
+	case AF_INET6: {
+		struct sockaddr_in6 *addr_in6 = (struct sockaddr_in6 *)&peer;
+
+		inet_ntop(AF_INET6, &(addr_in6->sin6_addr), name, INET6_ADDRSTRLEN);
+		port = htons(addr_in6->sin6_port);
+		break;
+	}
+	default:
+		break;
+}
+	lua_pushstring(L, name);
+	lua_pushinteger(L, port);
+	return 2;
+}
+
+/**
  * @function ctx:rtu_get_serial_mode
  * @return @{rtu_constants} the serial mode, either RTU_RS232 or RTU_RS485
  */
@@ -1166,6 +1211,34 @@ static int ctx_tcp_pi_accept(lua_State *L)
 	return 1;
 }
 
+
+/**
+ * Close the TCP socket in current context
+ * @function ctx:close_socket
+ * @param sock the socket we want to be closed
+ * @return
+ */
+static int ctx_close_socket(lua_State *L)
+{
+	ctx_t *ctx = ctx_check(L, 1);
+	int socket = luaL_optinteger(L, 2, -1);
+
+	if (ctx->is_rtu) {
+		return luaL_error(L, "Cannot call TCP methods on an RTU context");
+	}
+
+	if (socket != -1) {
+		close(socket);
+	} else {
+		int ctx_socket = modbus_get_socket(ctx->modbus);
+		if (ctx_socket != -1) {
+			close(ctx_socket);
+			modbus_set_socket(ctx->modbus, -1);
+		}
+	}
+	return 0;
+}
+
 /**
  * @function ctx:modbus_mapping_new
  * @param 
@@ -1454,6 +1527,7 @@ static const struct luaL_Reg ctx_M[] = {
 	{"get_socket",						ctx_get_socket},
 	{"get_byte_timeout",				ctx_get_byte_timeout},
 	{"get_header_length",				ctx_get_header_length},
+	{"get_peer_name",					ctx_get_peer_name},
 	{"get_response_timeout",			ctx_get_response_timeout},
 	{"read_bits",						ctx_read_bits},
 	{"read_input_bits",					ctx_read_input_bits},
@@ -1476,7 +1550,8 @@ static const struct luaL_Reg ctx_M[] = {
 	
 	{"tcp_pi_listen",					ctx_tcp_pi_listen},
 	{"tcp_pi_accept",					ctx_tcp_pi_accept},
-
+	{"close_socket",					ctx_close_socket},
+	
 	{"rtu_get_serial_mode",				ctx_rtu_get_serial_mode},
 	{"rtu_set_serial_mode",				ctx_rtu_set_serial_mode},
 	{"rtu_get_rts",						ctx_rtu_get_rts},
