@@ -5,7 +5,7 @@ call them as member functions on the context returned by the new() functions.
 
 @module libmodbus
 @author Karl Palsson <karlp@etactica.com> 2016-2020
-@modified Peeter Paist <peeter@superhands.ee> 2024
+@modified Peeter Paist <peeter@superhands.ee> 2024-2025
 
 @license
   Permission is hereby granted, free of charge, to any person obtaining
@@ -38,7 +38,6 @@ call them as member functions on the context returned by the new() functions.
 #include <errno.h>
 #include <assert.h>
 #include <sys/time.h>
-
 #if defined(WIN32)
 #include <winsock2.h>
 #endif
@@ -57,6 +56,7 @@ call them as member functions on the context returned by the new() functions.
 typedef struct {
 	lua_State *L;
 	modbus_t *modbus;
+	modbus_mapping_t *modbus_mapping;
 	size_t max_len;
 
 	/* only used for making tostring */
@@ -1102,7 +1102,7 @@ static int ctx_send_raw_request(lua_State *L)
 		lua_pushstring(L, modbus_strerror(errno));
 		rcount = 2;
 	} else {
-                // wait
+		// wait
 		lua_pushboolean(L, true);
 		rcount = 1;
 	}
@@ -1167,6 +1167,83 @@ static int ctx_tcp_pi_accept(lua_State *L)
 }
 
 /**
+ * @function ctx:modbus_mapping_new
+ * @param 
+ * @return 
+ */
+static int ctx_modbus_mapping_new(lua_State *L)
+{
+	ctx_t *ctx = ctx_check(L, 1);
+	int nb_bits = luaL_checknumber(L, 2);
+	int nb_input_bits = luaL_checknumber(L, 3);
+	int nb_registers = luaL_checknumber(L, 4);
+	int nb_input_registers = luaL_checknumber(L, 5);
+
+	ctx->modbus_mapping = modbus_mapping_new(nb_bits, nb_input_bits,
+									 nb_registers, nb_input_registers);
+	return 2;	
+}
+
+/**
+ * @function ctx:modbus_mapping_free
+ * @param 
+ * @return 
+ */
+static int ctx_modbus_mapping_free(lua_State *L)
+{
+	ctx_t *ctx = ctx_check(L, 1);
+	modbus_mapping_free(ctx->modbus_mapping);
+	return 1;
+}
+
+/**
+ * @function ctx:modbus_mapping_tab_registers_get
+ * @param 
+ * @return 
+ */
+static int ctx:modbus_mapping_tab_registers_get(lua_State *L)
+{
+	ctx_t *ctx = ctx_check(L, 1);
+	int start_reg = luaL_checknumber(L, 2);
+	int reg_count = luaL_checknumber(L, 3);
+	if (reg_count < 1) {
+		printf("Error: Register count must be larger than 0");
+		return -1;
+	}
+	if (start_reg + reg_count > ctx->modbus_mapping->nb_registers) {
+		printf("Error: start_reg + reg_count = %i, modbus_mapping->nb_registers = %i", start_reg + reg_count, ctx->modbus_mapping->nb_registers);
+		return -2;
+	}
+
+	lua_createtable(L, reg_count, 0);
+	for (int i = 0; i < reg_count; i++) {
+		printf("ctx_modbus_mapping_tab_registers_get() register %i value = 0x%X\n", start_reg + i, ctx->modbus_mapping->tab_registers[start_reg + i]);
+		lua_pushinteger(L, ctx->modbus_mapping->tab_registers[start_reg + i]);
+		lua_rawseti (L, -2, i + 1); /* In lua indices start at 1 */
+	}
+	return 1;
+}
+
+/**
+ * @function ctx:modbus_mapping_tab_register_set
+ * @param 
+ * @return 
+ */
+static int ctx:modbus_mapping_tab_register_set(lua_State *L)
+{
+	ctx_t *ctx = ctx_check(L, 1);
+	int reg = luaL_checknumber(L, 2);
+	int value = luaL_checknumber(L, 3);
+	
+	if (reg > ctx->modbus_mapping->nb_registers) {
+		printf("Error: reg = %i, modbus_mapping->nb_registers = %i", reg, ctx->modbus_mapping->nb_registers);
+		return -1;
+	}
+	ctx->modbus_mapping->tab_registers[reg] = (uint16_t)value;
+	return 1;
+}
+
+/**
  * Receives a request from a remote.
  * WARNING this might not be complete, documented that it exists
  * @function ctx:receive
@@ -1193,19 +1270,29 @@ static int ctx_receive(lua_State *L)
 	return rcount;
 }
 
+/**
+ * @function ctx:reply
+ * @param 
+ * @return 
+ */
 static int ctx_reply(lua_State *L)
 {
 	ctx_t *ctx = ctx_check(L, 1);
+	int rcount;
 	size_t req_len;
 	const char *req = luaL_checklstring(L, 2, &req_len);
 
-	luaL_checktype(L, 3, LUA_TTABLE);
-
-	// FIXME - oh boy, probably need a whole lot of wrappers on the mappings?
-	//modbus_reply(ctx->modbus, (uint8_t*)req, req_len, mapping);
-	(void)ctx;
-	(void)req;
-	return luaL_error(L, "reply is simply unimplemented my friend!");
+	int rc = modbus_reply(ctx->modbus, (uint8_t*)req, req_len, ctx->modbus_mapping);
+	if (rc > 0) {
+		lua_pushnumber(L, rc);
+		rcount = 1;
+	} else if (rc == 0) {
+		printf("Special case for rc = 0, can't remember\n");
+		rcount = 0;
+	} else {
+		rcount = libmodbus_rc_to_nil_error(L, rc, 0);
+	}	
+	return rcount;
 }
 
 /**
@@ -1231,13 +1318,13 @@ static int ctx_reply_exception(lua_State *L)
 
 
 struct definei {
-        const char* name;
-        int value;
+	const char* name;
+	int value;
 };
 
 struct defines {
-        const char* name;
-        const char* value;
+	const char* name;
+	const char* value;
 };
 
 /** Constants provided for use.
@@ -1287,8 +1374,8 @@ struct defines {
  * @field EXCEPTION_GATEWAY_PATH
  */
 static const struct definei D[] = {
-        {"RTU_RS232", MODBUS_RTU_RS232},
-        {"RTU_RS485", MODBUS_RTU_RS485},
+	{"RTU_RS232", MODBUS_RTU_RS232},
+	{"RTU_RS485", MODBUS_RTU_RS485},
 	//{"TCP_SLAVE", MODBUS_TCP_SLAVE},
 	{"TCP_SLAVE", 0xFF},
 	{"BROADCAST_ADDRESS", MODBUS_BROADCAST_ADDRESS},
@@ -1309,7 +1396,7 @@ static const struct definei D[] = {
 	{"RTU_RTS_NONE", MODBUS_RTU_RTS_NONE},
 	{"RTU_RTS_UP", MODBUS_RTU_RTS_UP},
 	{"RTU_RTS_DOWN", MODBUS_RTU_RTS_DOWN},
-        {NULL, 0}
+	{NULL, 0}
 };
 
 /** Other constants
@@ -1320,21 +1407,21 @@ static const struct definei D[] = {
  */
 static const struct defines S[] = {
 	{"VERSION_STRING", LIBMODBUS_VERSION_STRING},
-        {NULL, NULL}
+	{NULL, NULL}
 };
 
 static void modbus_register_defs(lua_State *L, const struct definei *D, const struct defines *S)
 {
-        while (D->name != NULL) {
-                lua_pushinteger(L, D->value);
-                lua_setfield(L, -2, D->name);
-                D++;
-        }
-        while (S->name != NULL) {
-                lua_pushstring(L, S->value);
-                lua_setfield(L, -2, S->name);
-                S++;
-        }
+	while (D->name != NULL) {
+		lua_pushinteger(L, D->value);
+		lua_setfield(L, -2, D->name);
+		D++;
+	}
+	while (S->name != NULL) {
+		lua_pushstring(L, S->value);
+		lua_setfield(L, -2, S->name);
+		S++;
+	}
 }
 
 
@@ -1361,45 +1448,50 @@ static const struct luaL_Reg R[] = {
 };
 
 static const struct luaL_Reg ctx_M[] = {
-	{"connect",		ctx_connect},
-	{"close",		ctx_close},
-	{"destroy",		ctx_destroy},
-	{"get_socket",		ctx_get_socket},
-	{"get_byte_timeout",	ctx_get_byte_timeout},
-	{"get_header_length",	ctx_get_header_length},
-	{"get_response_timeout",ctx_get_response_timeout},
-	{"read_bits",		ctx_read_bits},
-	{"read_input_bits",	ctx_read_input_bits},
-	{"read_input_registers",ctx_read_input_registers},
-	{"read_registers",	ctx_read_registers},
-	{"report_slave_id",	ctx_report_slave_id},
-	{"set_debug",		ctx_set_debug},
-	{"set_byte_timeout",	ctx_set_byte_timeout},
-	{"set_error_recovery",	ctx_set_error_recovery},
-	{"set_response_timeout",ctx_set_response_timeout},
-	{"set_slave",		ctx_set_slave},
-	{"set_socket",		ctx_set_socket},
-	{"write_bit",		ctx_write_bit},
-	{"write_bits",		ctx_write_bits},
-	{"write_register",	ctx_write_register},
-	{"write_registers",	ctx_write_registers},
-	{"send_raw_request",	ctx_send_raw_request},
-	{"__gc",		ctx_destroy},
-	{"__tostring",		ctx_tostring},
+	{"connect",							ctx_connect},
+	{"close",							ctx_close},
+	{"destroy",							ctx_destroy},
+	{"get_socket",						ctx_get_socket},
+	{"get_byte_timeout",				ctx_get_byte_timeout},
+	{"get_header_length",				ctx_get_header_length},
+	{"get_response_timeout",			ctx_get_response_timeout},
+	{"read_bits",						ctx_read_bits},
+	{"read_input_bits",					ctx_read_input_bits},
+	{"read_input_registers",			ctx_read_input_registers},
+	{"read_registers",					ctx_read_registers},
+	{"report_slave_id",					ctx_report_slave_id},
+	{"set_debug",						ctx_set_debug},
+	{"set_byte_timeout",				ctx_set_byte_timeout},
+	{"set_error_recovery",				ctx_set_error_recovery},
+	{"set_response_timeout",			ctx_set_response_timeout},
+	{"set_slave",						ctx_set_slave},
+	{"set_socket",						ctx_set_socket},
+	{"write_bit",						ctx_write_bit},
+	{"write_bits",						ctx_write_bits},
+	{"write_register",					ctx_write_register},
+	{"write_registers",					ctx_write_registers},
+	{"send_raw_request",				ctx_send_raw_request},
+	{"__gc",							ctx_destroy},
+	{"__tostring",						ctx_tostring},
 	
-	{"tcp_pi_listen",	ctx_tcp_pi_listen},
-	{"tcp_pi_accept",	ctx_tcp_pi_accept},
+	{"tcp_pi_listen",					ctx_tcp_pi_listen},
+	{"tcp_pi_accept",					ctx_tcp_pi_accept},
 
-	{"rtu_get_serial_mode",	ctx_rtu_get_serial_mode},
-	{"rtu_set_serial_mode",	ctx_rtu_set_serial_mode},
-	{"rtu_get_rts",		ctx_rtu_get_rts},
-	{"rtu_set_rts",		ctx_rtu_set_rts},
-	{"rtu_get_rts_delay",	ctx_rtu_get_rts_delay},
-	{"rtu_set_rts_delay",	ctx_rtu_set_rts_delay},
-
-	{"receive",		ctx_receive},
-	{"reply",		ctx_reply}, /* Totally busted */
-	{"reply_exception",	ctx_reply_exception},
+	{"rtu_get_serial_mode",				ctx_rtu_get_serial_mode},
+	{"rtu_set_serial_mode",				ctx_rtu_set_serial_mode},
+	{"rtu_get_rts",						ctx_rtu_get_rts},
+	{"rtu_set_rts",						ctx_rtu_set_rts},
+	{"rtu_get_rts_delay",				ctx_rtu_get_rts_delay},
+	{"rtu_set_rts_delay",				ctx_rtu_set_rts_delay},
+	
+	{"modbus_mapping_new",				ctx_modbus_mapping_new},
+	{"modbus_mapping_free",				ctx_modbus_mapping_free},
+	{"modbus_mapping_tab_registers_get",ctx_modbus_mapping_tab_registers_get},
+	{"modbus_mapping_tab_register_set",	ctx_modbus_mapping_tab_register_set},
+	
+	{"receive",							ctx_receive},
+	{"reply",							ctx_reply},
+	{"reply_exception",					ctx_reply_exception},
 
 	{NULL, NULL}
 };
