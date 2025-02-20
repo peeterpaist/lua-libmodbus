@@ -1274,7 +1274,7 @@ static int ctx_modbus_mapping_free(lua_State *L)
  * @param 
  * @return 
  */
-static int ctx:modbus_mapping_tab_registers_get(lua_State *L)
+static int ctx_modbus_mapping_tab_registers_get(lua_State *L)
 {
 	ctx_t *ctx = ctx_check(L, 1);
 	int start_reg = luaL_checknumber(L, 2);
@@ -1302,7 +1302,7 @@ static int ctx:modbus_mapping_tab_registers_get(lua_State *L)
  * @param 
  * @return 
  */
-static int ctx:modbus_mapping_tab_register_set(lua_State *L)
+static int ctx_modbus_mapping_tab_register_set(lua_State *L)
 {
 	ctx_t *ctx = ctx_check(L, 1);
 	int reg = luaL_checknumber(L, 2);
